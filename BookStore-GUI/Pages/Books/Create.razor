@@ -1,0 +1,91 @@
+﻿@page "/books/create/"
+@attribute [Authorize(Roles = "Librarian")]
+
+@inject IBookRepository _bookRepo
+@inject NavigationManager _navManager
+
+<h3>Create Book</h3>
+<br />
+<hr />
+<br />
+
+@if (!response)
+{
+	<ErrorMessage Message="Something Went Wrong With the Operation" />
+}
+else
+{
+	<EditForm Model="Book" OnValidSubmit="CreateBook">
+		<DataAnnotationsValidator />
+		<ValidationSummary />
+		<div class="form-group">
+			<label for="title">Book Title</label>
+			<InputText @bind-Value="Book.Title" class="form-control" id="title" />
+		</div>
+		<div class="form-group">
+			<label for="price">Year</label>
+			<InputNumber @bind-Value="Book.Year" class="form-control" id="year" />
+		</div>
+		<div class="form-group">
+			<label for="price">Author</label>
+			<InputText @bind-Value="Book.Author" class="form-control" id="author" />
+		</div>
+		<div class="form-group">
+			<label for="price">Quantity</label>
+			<InputNumber @bind-Value="Book.Quantity" class="form-control" id="quantity" />
+		</div>
+		<div class="form-group">
+			<label for="summary">Summary</label>
+			<InputTextArea @bind-Value="Book.Summary" class="form-control" id="summary" />
+		</div>
+		<button class="btn btn-primary" type="submit">
+			<span class="oi oi-pencil"></span>
+			Create Book
+		</button>
+		<button @onclick="BackToList" class="btn btn-outline-secondary">
+			<span class="oi oi-media-skip-backward"></span>
+			Back To List
+		</button>
+	</EditForm>
+}
+
+@code {
+	private Book Book = new Book();
+	private bool response = true;
+	private HubConnection hubConnection;
+
+	protected async override Task OnInitializedAsync()
+	{
+		var hubUrl = $"{Endpoints.BaseUrl}broadcastHub";
+		hubConnection = new HubConnectionBuilder()
+			.WithUrl(hubUrl)
+			.Build();
+
+		await hubConnection.StartAsync();
+	}
+
+	private async Task CreateBook()
+	{
+		response = await _bookRepo.Create(Endpoints.BooksEndpoint, Book);
+		if (response)
+		{
+			if (IsConnected) await SendMessage();
+			BackToList();
+		}
+	}
+
+	public bool IsConnected =>
+		hubConnection.State == HubConnectionState.Connected;
+
+	public void Dispose()
+	{
+		_ = hubConnection.DisposeAsync();
+	}
+
+	Task SendMessage() => hubConnection.SendAsync("SendMessage");
+
+	private void BackToList()
+	{
+		_navManager.NavigateTo("/books/");
+	}
+}

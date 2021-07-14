@@ -1,0 +1,173 @@
+﻿@page "/rentals/"
+
+@inject IBookRepository _bookRepo
+@inject IAuthenticationRepository _authRepo
+@inject IRentalRepository _rentalRepo
+@inject IMemberRepository _memberRepo
+@inject NavigationManager _navManager
+
+<h3 class="card-title">Book Rentals</h3>
+<br />
+<hr />
+<br />
+
+@if (Rentals == null)
+{
+	<LoadingMessage Message="Loading Rentals..." />
+}
+else
+{
+	<AuthorizeView Roles="Librarian">
+		<br />
+		<br />
+		<br />
+		<table class="table table-responsive">
+			<thead>
+				<tr>
+					<th>Book</th>
+					<th>Member</th>
+					<th>Start Date</th>
+					<th>End Date</th>
+					<th>Status</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				@foreach (var rental in Rentals)
+				{
+					<tr>
+						<td>@rental.BookName</td>
+						<td>@rental.MemberName</td>
+						<td>@rental.RentalCreation</td>
+						<td>@rental.RentalDueDate</td>
+						<td>@rental.Status</td>
+						@if (rental.Status == RentalStatus.Pending || rental.Status == RentalStatus.Rented)
+						{
+							<td>
+								<button @onclick="() => AcceptRent(rental)" class="btn btn-primary">
+									<span class="oi oi-circle-check"></span>
+								</button>
+								<button @onclick="() => DeclineRent(rental)" class="btn btn-danger">
+									<span class="oi oi-circle-x"></span>
+								</button>
+								<button @onclick="() => ReturnRent(rental)" class="btn btn-info">
+									<span class="oi oi-eject"></span>
+								</button>
+							</td>
+						}
+					</tr>
+				}
+			</tbody>
+		</table>
+	</AuthorizeView>
+	<AuthorizeView Roles="Member">
+		<br />
+		<br />
+		<br />
+		<table class="table table-responsive">
+			<thead>
+				<tr>
+					<th>Book</th>
+					<th>Start Date</th>
+					<th>End Date</th>
+					<th>Status</th>
+				</tr>
+			</thead>
+			<tbody>
+				@foreach (var rental in RentalsForMember)
+				{
+					<tr>
+						<td>@rental.BookName</td>
+						<td>@rental.RentalCreation</td>
+						<td>@rental.RentalDueDate</td>
+						<td>@rental.Status</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</AuthorizeView>
+}
+@code{
+	protected IList<Rental> Rentals;
+	protected IList<Rental> RentalsForMember;
+	protected Rental BookRental;
+	private HubConnection hubConnection;
+
+	protected async override Task OnInitializedAsync()
+	{
+		var hubUrl = $"{Endpoints.BaseUrl}broadcastHub";
+		hubConnection = new HubConnectionBuilder()
+			.WithUrl(hubUrl)
+			.Build();
+
+		hubConnection.On("ReceiveMessage", async () =>
+		{
+			await LoadData();
+			StateHasChanged();
+		});
+
+		await hubConnection.StartAsync();
+
+		await LoadData();
+	}
+
+	protected async Task LoadData()
+	{
+		var user = await _authRepo.ActiveUser();
+		var member = await _memberRepo.Get(Endpoints.MembersEndpoint, user);
+		Rentals = await _rentalRepo.Get(Endpoints.RentalEndpoint);
+		if (member != null)
+			RentalsForMember = Rentals.Where(r => r.MemberName == member.Name).ToList();
+		else
+			RentalsForMember = Rentals;
+	}
+
+	public bool IsConnected =>
+		hubConnection.State == HubConnectionState.Connected;
+
+	public void Dispose()
+	{
+		_ = hubConnection.DisposeAsync();
+	}
+
+	Task SendMessage() => hubConnection.SendAsync("SendMessage");
+
+	protected async Task AcceptRent(Rental rental)
+	{
+		if (rental.Status != RentalStatus.Rented)
+		{
+			rental.Status = RentalStatus.Rented;
+			rental.RentalDueDate = rental.RentalCreation.AddDays(14);
+			await _rentalRepo.Update(Endpoints.RentalEndpoint, rental, rental.Id);
+			var Book = await _bookRepo.Get(Endpoints.BooksEndpoint, rental.BookId);
+			Book.Quantity -= 1;
+			await _bookRepo.Update(Endpoints.BooksEndpoint, Book, Book.Id);
+
+			if (IsConnected) await SendMessage();
+		}
+	}
+
+	protected async Task DeclineRent(Rental rental)
+	{
+		if (rental.Status == RentalStatus.Pending)
+		{
+			rental.Status = RentalStatus.Declined;
+			await _rentalRepo.Update(Endpoints.RentalEndpoint, rental, rental.Id);
+
+			if (IsConnected) await SendMessage();
+		}
+	}
+	protected async Task ReturnRent(Rental rental)
+	{
+		if (rental.Status == RentalStatus.Rented)
+		{
+			rental.Status = RentalStatus.Returned;
+			await _rentalRepo.Update(Endpoints.RentalEndpoint, rental, rental.Id);
+			var Book = await _bookRepo.Get(Endpoints.BooksEndpoint, rental.BookId);
+			Book.Quantity += 1;
+			await _bookRepo.Update(Endpoints.BooksEndpoint, Book, Book.Id);
+
+			if (IsConnected) await SendMessage();
+		}
+	}
+}

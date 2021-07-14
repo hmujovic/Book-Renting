@@ -1,0 +1,194 @@
+﻿@page "/books/"
+
+@inject IBookRepository _bookRepo
+@inject IAuthenticationRepository _authRepo
+@inject IRentalRepository _rentalRepo
+@inject IMemberRepository _memberRepo
+@inject NavigationManager _navManager
+
+<h3 class="card-title">Books</h3>
+<br />
+<hr />
+<br />
+
+@if (BookList == null)
+{
+	<LoadingMessage Message="Loading Books..." />
+}
+else
+{
+	<AuthorizeView Roles="Librarian">
+		<a href="/books/create" class="btn btn-primary">
+			<span class="oi oi-plus"></span>
+			Create New Book
+		</a>
+		<br />
+		<br />
+		<br />
+		<table class="table table-responsive">
+			<thead>
+				<tr>
+					<th>Title</th>
+					<th>Year</th>
+					<th>Author</th>
+					<th>Summary</th>
+					<th>Quantity</th>
+					<th>Delete a Book</th>
+				</tr>
+			</thead>
+			<tbody>
+				@foreach (var book in BookList)
+				{
+					<tr>
+						<td>@book.Title</td>
+						<td>@book.Year</td>
+						@if (String.IsNullOrEmpty(book.Author))
+						{
+							<span class="text-muted">No Author Recorded</span>
+						}
+						else
+						{
+							<td>@book.Author</td>
+						}
+						<td>@book.Summary</td>
+						<td>@book.Quantity</td>
+						<td>
+							<a href="/books/delete/@book.Id" class="btn btn-danger">
+								<span class="oi oi-delete"></span>
+							</a>
+						</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	</AuthorizeView>
+	<AuthorizeView Roles="Member">
+		<br />
+		<br />
+		<br />
+		<table class="table table-responsive">
+			<thead>
+				<tr>
+					<th>Title</th>
+					<th>Year</th>
+					<th>Author</th>
+					<th>Summary</th>
+					<th>Quantity</th>
+					@if (CheckRents() == true)
+					{
+						<th>Rent a Book</th>
+					}
+				</tr>
+			</thead>
+			<tbody>
+				@foreach (var book in BookList)
+				{
+					<tr>
+						<td>@book.Title</td>
+						<td>@book.Year</td>
+						@if (String.IsNullOrEmpty(book.Author))
+						{
+							<span class="text-muted">No Author Recorded</span>
+						}
+						else
+						{
+							<td>@book.Author</td>
+						}
+						<td>@book.Summary</td>
+						<td>@book.Quantity</td>
+						@if (book.Quantity != 0 && CheckRents() == true)
+						{
+							<td>
+								<button @onclick="() => RentBook(book)" class="btn btn-primary">
+									<span class="oi oi-circle-check"></span>
+								</button>
+							</td>
+						}
+					</tr>
+				}
+			</tbody>
+		</table>
+	</AuthorizeView>
+}
+@code {
+	protected IList<Book> BookList;
+	protected IList<Rental> Rentals;
+	protected IList<Rental> RentalsForMember;
+	protected Rental BookRental;
+	protected bool response;
+	private HubConnection hubConnection;
+
+	protected override async Task OnInitializedAsync()
+	{
+
+
+		var hubUrl = $"{Endpoints.BaseUrl}broadcastHub";
+		hubConnection = new HubConnectionBuilder()
+			.WithUrl(hubUrl)
+			.Build();
+
+		hubConnection.On("ReceiveMessage", async () =>
+		{
+			await LoadData();
+			StateHasChanged();
+		});
+
+		await hubConnection.StartAsync();
+
+		await LoadData();
+	}
+
+	protected async Task LoadData()
+	{
+		BookList = await _bookRepo.Get(Endpoints.BooksEndpoint);
+		var user = await _authRepo.ActiveUser();
+		var member = await _memberRepo.Get(Endpoints.MembersEndpoint, user);
+		Rentals = await _rentalRepo.Get(Endpoints.RentalEndpoint);
+		if (member != null)
+			RentalsForMember = Rentals.Where(r => r.MemberName == member.Name).ToList();
+		else
+			RentalsForMember = Rentals;
+	}
+
+	public bool IsConnected =>
+	hubConnection.State == HubConnectionState.Connected;
+
+	public void Dispose()
+	{
+		_ = hubConnection.DisposeAsync();
+	}
+
+	Task SendMessage() => hubConnection.SendAsync("SendMessage");
+
+	protected bool CheckRents()
+	{
+		var rents = RentalsForMember.Where(x => x.Status == RentalStatus.Rented || x.Status == RentalStatus.Pending).ToList();
+		return (rents.Count < 5) ? true : false;
+	}
+
+	protected async Task RentBook(Book book)
+	{
+		if (!(RentalsForMember.Where(x => (x.Status == RentalStatus.Pending || x.Status == RentalStatus.Rented) && x.BookId == book.Id).Any()))
+		{
+			var user = await _authRepo.ActiveUser();
+			var member = await _memberRepo.Get(Endpoints.MembersEndpoint, user);
+
+			BookRental = new Rental
+			{
+				BookName = book.Title,
+				BookId = book.Id,
+				MemberName = member.Name,
+				RentalCreation = DateTime.Now,
+				Status = RentalStatus.Pending
+			};
+
+			response = await _rentalRepo.Create(Endpoints.RentalEndpoint, BookRental);
+			if (response)
+			{
+				if (IsConnected) await SendMessage();
+				//_navManager.NavigateTo("/rentals/");
+			}
+		}
+	}
+}
+
